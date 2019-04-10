@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package urpc;
+
+message RawPacket {
+    uint32 cmd           = 1;
+    uint32 payload_size  = 2;
+    bytes payload        = 3;
+}
+
