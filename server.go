@@ -21,23 +21,44 @@ type ServerBinding struct {
 
 // PacketWriter for urpc
 type PacketWriter interface {
-	WriteToUDP([]byte, *net.UDPAddr) (int, error)
+	WritePacket(Cmd, []byte, *net.UDPAddr) error
+}
+
+type packetWriter struct {
+	udpConn *net.UDPConn
+}
+
+func (w *packetWriter) WritePacket(cmd Cmd, payload []byte, addr *net.UDPAddr) (err error) {
+	bytes, err := encodePacket(cmd, payload)
+	if err != nil {
+		return
+	}
+	nbytes, err := w.udpConn.WriteToUDP(bytes, addr)
+	if err != nil {
+		return
+	}
+
+	if nbytes != len(bytes) {
+		err = errShortWrite
+	}
+
+	return
 }
 
 // Handler for urpc
 type Handler interface {
-	ServeURPC(PacketWriter, Packet)
+	ServeURPC(PacketWriter, Packet, *net.UDPAddr)
 }
 
 // The HandlerFunc type is an adapter to allow the use of
 // ordinary functions as urpc handlers. If f is a function
 // with the appropriate signature, HandlerFunc(f) is a
 // Handler that calls f.
-type HandlerFunc func(PacketWriter, Packet)
+type HandlerFunc func(PacketWriter, Packet, *net.UDPAddr)
 
 // ServeURPC calls f(w, p).
-func (f HandlerFunc) ServeURPC(w PacketWriter, p Packet) {
-	f(w, p)
+func (f HandlerFunc) ServeURPC(w PacketWriter, p Packet, addr *net.UDPAddr) {
+	f(w, p, addr)
 }
 
 // ServeMux is urpc request multiplexer.
@@ -50,7 +71,7 @@ type ServeMux struct {
 func NewServeMux() *ServeMux { return &ServeMux{} }
 
 // HandleFunc registers the handler function for the given pattern.
-func (mux *ServeMux) HandleFunc(cmd Cmd, handler func(PacketWriter, Packet)) {
+func (mux *ServeMux) HandleFunc(cmd Cmd, handler func(PacketWriter, Packet, *net.UDPAddr)) {
 	mux.Handle(cmd, HandlerFunc(handler))
 }
 
@@ -75,7 +96,7 @@ func (mux *ServeMux) Handle(cmd Cmd, handler Handler) {
 
 // ServeURPC dispatches the request to the handler whose
 // cmd matches the request.
-func (mux *ServeMux) ServeURPC(w PacketWriter, p Packet) {
+func (mux *ServeMux) ServeURPC(w PacketWriter, p Packet, addr *net.UDPAddr) {
 	mux.mu.RLock()
 	h, ok := mux.m[p.Cmd]
 	if !ok {
@@ -83,7 +104,7 @@ func (mux *ServeMux) ServeURPC(w PacketWriter, p Packet) {
 		return
 	}
 	mux.mu.RUnlock()
-	h.ServeURPC(w, p)
+	h.ServeURPC(w, p, addr)
 }
 
 // Server for urpc server
@@ -179,9 +200,8 @@ func (srv *Server) startWorkers() {
 						LogError("decodePacket", err)
 						goto return_bytes
 					}
-					packet.Addr = work.remoteAddr
 					// call handler
-					srv.bindings[work.idx].Handler.ServeURPC(work.ln, packet)
+					srv.bindings[work.idx].Handler.ServeURPC(work.writer, packet, work.remoteAddr)
 
 					// return bytes
 				return_bytes:
@@ -224,13 +244,15 @@ func (srv *Server) Serve(ln *net.UDPConn, idx int) (err error) {
 		nbytes  int
 	)
 
+	writer := &packetWriter{udpConn: ln}
+
 	for {
 		bytes := srv.getBytes()
 		if bytes == nil {
 			return errClosed
 		}
 		if srv.bindings[idx].DefaultReadTimeout > 0 {
-			endTime = time.Now().Add(time.Duration(DefaultReadTimeout) * time.Second)
+			endTime = time.Now().Add(time.Duration(srv.bindings[idx].DefaultReadTimeout) * time.Second)
 		} else {
 			endTime = time.Time{}
 		}
@@ -262,23 +284,23 @@ func (srv *Server) Serve(ln *net.UDPConn, idx int) (err error) {
 			continue
 		}
 
-		srv.deliverToWorker(ln, idx, remoteAddr, bytes, nbytes)
+		srv.deliverToWorker(writer, idx, remoteAddr, bytes, nbytes)
 
 	}
 
 }
 
 type work struct {
-	ln         *net.UDPConn
+	writer     *packetWriter
 	idx        int
 	remoteAddr *net.UDPAddr
 	bytes      []byte
 	nbytes     int
 }
 
-func (srv *Server) deliverToWorker(ln *net.UDPConn, idx int, remoteAddr *net.UDPAddr, bytes []byte, nbytes int) {
+func (srv *Server) deliverToWorker(writer *packetWriter, idx int, remoteAddr *net.UDPAddr, bytes []byte, nbytes int) {
 	select {
-	case srv.workCh <- work{ln: ln, idx: idx, remoteAddr: remoteAddr, bytes: bytes, nbytes: nbytes}:
+	case srv.workCh <- work{writer: writer, idx: idx, remoteAddr: remoteAddr, bytes: bytes, nbytes: nbytes}:
 	default:
 		// 处理不过来就扔掉
 		srv.bytesCh <- bytes

@@ -1,7 +1,5 @@
 package urpc
 
-import "net"
-
 // MediaType for media type
 type MediaType int
 
@@ -19,5 +17,4 @@ type Cmd uint8
 type Packet struct {
 	Cmd     Cmd
 	Payload []byte
-	Addr    *net.UDPAddr
 }
