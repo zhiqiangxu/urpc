@@ -19,11 +19,11 @@ func main() {
 	}
 	bytes := make([]byte, 1024)
 	for {
-		log.Println("WritePacket", conn.WritePacket(helloCmd, []byte("hello world")))
+		log.Println("client WritePacket", conn.WritePacket(helloCmd, []byte("hello world")))
 		time.Sleep(time.Second)
 
 		packet, err := conn.ReadPacket(bytes)
-		log.Println("resp cmd", packet.Cmd, "payload", packet.Payload, "err", err)
+		log.Println("client got resp cmd", packet.Cmd, "payload", string(packet.Payload), "err", err)
 	}
 }
 
@@ -37,7 +37,7 @@ const (
 func startServer() {
 	handler := urpc.NewServeMux()
 	handler.HandleFunc(helloCmd, func(writer urpc.PacketWriter, packet urpc.Packet, addr *net.UDPAddr) {
-		log.Println("client payload", string(packet.Payload))
+		log.Println("server got client payload", string(packet.Payload))
 		log.Println("server WritePacket", writer.WritePacket(helloRespCmd, []byte("resp from server"), addr))
 	})
 	bindings := []urpc.ServerBinding{
