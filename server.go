@@ -25,7 +25,8 @@ type PacketWriter interface {
 }
 
 type packetWriter struct {
-	udpConn *net.UDPConn
+	udpConn      *net.UDPConn
+	writeTimeout int
 }
 
 func (w *packetWriter) WritePacket(cmd Cmd, payload []byte, addr *net.UDPAddr) (err error) {
@@ -33,6 +34,14 @@ func (w *packetWriter) WritePacket(cmd Cmd, payload []byte, addr *net.UDPAddr) (
 	if err != nil {
 		return
 	}
+	if w.writeTimeout > 0 {
+		endTime := time.Now().Add(time.Duration(w.writeTimeout) * time.Second)
+		err = w.udpConn.SetWriteDeadline(endTime)
+		if err != nil {
+			return
+		}
+	}
+
 	nbytes, err := w.udpConn.WriteToUDP(bytes, addr)
 	if err != nil {
 		return
@@ -244,30 +253,29 @@ func (srv *Server) Serve(ln *net.UDPConn, idx int) (err error) {
 		nbytes  int
 	)
 
-	writer := &packetWriter{udpConn: ln}
+	readTimeout := srv.bindings[idx].DefaultReadTimeout
+	writeTimeout := srv.bindings[idx].DefaultWriteTimeout
+	writer := &packetWriter{udpConn: ln, writeTimeout: writeTimeout}
 
 	for {
 		bytes := srv.getBytes()
 		if bytes == nil {
 			return errClosed
 		}
-		if srv.bindings[idx].DefaultReadTimeout > 0 {
-			endTime = time.Now().Add(time.Duration(srv.bindings[idx].DefaultReadTimeout) * time.Second)
-		} else {
-			endTime = time.Time{}
-		}
-
-		err = ln.SetReadDeadline(endTime)
-		if err != nil {
-			srv.mu.RLock()
-			if _, ok := srv.listeners[ln]; !ok {
+		if readTimeout > 0 {
+			endTime = time.Now().Add(time.Duration(readTimeout) * time.Second)
+			err = ln.SetReadDeadline(endTime)
+			if err != nil {
+				srv.mu.RLock()
+				if _, ok := srv.listeners[ln]; !ok {
+					srv.mu.RUnlock()
+					return
+				}
 				srv.mu.RUnlock()
-				return
-			}
-			srv.mu.RUnlock()
 
-			LogError("SetReadDeadline", err)
-			continue
+				LogError("SetReadDeadline", err)
+				continue
+			}
 		}
 
 		var remoteAddr *net.UDPAddr
