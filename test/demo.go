@@ -13,7 +13,7 @@ func main() {
 
 	time.Sleep(time.Second)
 
-	conn, err := urpc.NewConnection(addr)
+	conn, err := urpc.NewConnection(addr, urpc.ConnectionConfig{})
 	if err != nil {
 		panic(err)
 	}
